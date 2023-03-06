@@ -1,5 +1,5 @@
 //! Loading configuration can be annoying.
-//! This project is meant to save you on some boilerplate.
+//! This project is meant to reduce writing some boilerplate.
 
 #![deny(clippy::correctness)]
 #![deny(clippy::nursery)]
@@ -11,27 +11,42 @@
 #[macro_export]
 /// A macro that generates the Configuration struct.
 ///
-/// The macro accepts a combination of environment variables to load, identifier to attach it to, and a type to parse it into.
+/// The macro accepts a list where each item is a combination of:
+/// - environment variable to load
+/// - visibility for a configuration setting
+/// - identifier to attach it to
+/// - a type to parse the setting into
+///
+/// e.g.,
+/// ```rust
+/// cola::make_conf! [
+///     "SOME_ENV_VAR" => pub some_val: String, // public from the module
+///     "OTHER_ENV_VAR" => other_val: u32, // private
+///     "PUBLIC_ENV_VAR" => pub(crate) public_val: u32 // public from the crate
+/// ];
+/// ```
+///
 /// Environment variables are always loaded as a String; this will call <core::str::parse> on the string into the provided type.
-/// As a result, whatever your target data type is must implement <core::str::FromStr>.
+/// As a result, whatever the target data type is must implement <core::str::FromStr>.
 ///
 /// The struct will expose two methods:
-/// - a `new` method that will return a Result with the loaded data; the error is sbased on what is wrong when loading
-/// - a `default` implementation that will return the structure directly; it will call `std::panic` if anything is wrong
+/// - a `new` method that will return a Result with the loaded data; the error is based on what is wrong when loading
+/// - a `default` implementation that will return the structure directly; it will call `std::panic` if anything is wrong when loading
 ///
 /// We save ourselves from having to write boiler plate to load config and instead can instead just
 /// get to work with assurances that the values are there.
 ///
-/// The generated struct also contains some light usage documentation for your rust docs.
+/// The generated struct also contains some light usage documentation for rust docs.
 ///
 /// # Visibility
 ///
-/// The generated configuration will be entirely public to allow for simple extension;
-/// it's recommended you wrap the configuration into it's own module to limit the visibility.
+/// The generated configuration will be public to allow for simple extension;
+/// but the individual values are visible based on the provided visibility.
+/// Regardless, it's recommended to wrap the configuration into it's own module.
 ///
 /// # Examples
 ///
-/// ```
+/// ```rust
 /// // We seed the environment variable for our example
 /// std::env::set_var("EX_YOUR_NAME", "Brad");
 /// std::env::set_var("EX_YOUR_AGE", "20");
@@ -39,15 +54,15 @@
 ///
 /// mod my_conf {
 ///     cola::make_conf! [
-///         "EX_YOUR_NAME" => your_name: String,
+///         "EX_YOUR_NAME" => pub your_name: String,
 ///         "EX_YOUR_AGE" => your_age: u32
 ///     ];
-
+///
 ///     impl Configuration {
 ///         pub fn hello(&self) -> String {
 ///             format!("Hello, {}", self.your_name)
 ///         }
-
+///
 ///         pub fn age(&self) -> String {
 ///             match self.your_age {
 ///                 age if age >= 18 => "Voting age".to_string(),
@@ -63,19 +78,19 @@
 /// assert_eq!(my_conf.hello(), "Hello, Brad");
 /// assert_eq!(my_conf.age(), "Voting age");
 ///
-/// // If you want control over the bad data situation
+/// // For control over the bad data situation
 /// use cola::ConfigError;
 /// let also_my_conf = match Configuration::new() {
 ///     Ok(conf) => conf,
 ///     Err(ConfigError::ConfigMissing(reason)) => panic!("'{reason}' not found"),
 ///     Err(ConfigError::InvalidData(reason)) => panic!("'{reason}' not parseable")
 /// };
-/// assert_eq!(also_my_conf.your_name, "Brad");
-/// assert_eq!(also_my_conf.your_age, 20u32);
+/// assert_eq!(also_my_conf.your_name, "Brad"); // <- Can be called; public
+/// // assert_eq!(also_my_conf.your_age, 20u32); // <- Can't be called; not public
 /// ```
 ///
 macro_rules! make_conf {
-    ( $( $x:expr => $n:ident: $t:ty ), * ) => {
+    ( $( $x:expr => $v:vis $n:ident: $t:ty ), * ) => {
         use $crate::ConfigError;
 
         /// App configuration, wrapped up into a neat package.
@@ -83,7 +98,7 @@ macro_rules! make_conf {
             $(
                 #[doc="This value represents the data stored in the environment variable "]
                 #[doc=$x]
-                pub $n: $t,
+                $v $n: $t,
             )*
         }
 
@@ -127,6 +142,7 @@ pub enum ConfigError {
 ///
 /// # Errors
 /// - <ConfigError::InvalidData>
+///
 pub fn convert<T>(source: String) -> Result<T, ConfigError>
 where
     T: core::str::FromStr,
@@ -140,6 +156,7 @@ where
 ///
 /// # Errors
 /// - <ConfigError::ConfigMissing>
+///
 pub fn parse_env(key: &str) -> Result<String, ConfigError> {
     std::env::var(key).map_or_else(
         |_| {
@@ -185,13 +202,10 @@ mod tests {
     #[test]
     fn shadows_other_configurations() {
         #![allow(clippy::items_after_statements)]
-
         env::set_var("TEST_STRING_ENV_KEY", "TEST_STRING_VALUE");
-
         make_conf! ["TEST_STRING_ENV_KEY" => definitely_new_value: String];
 
         let conf = Configuration::default();
-
         assert_eq!(conf.definitely_new_value, "TEST_STRING_VALUE");
     }
 
@@ -199,11 +213,10 @@ mod tests {
     #[should_panic]
     fn it_fails_on_missing_value() {
         mod sub {
-            make_conf! ["DEFINITELY_DOES_NOT_EXIST" => definitely_maybe: String];
+            make_conf! ["DEFINITELY_DOES_NOT_EXIST" => pub definitely_maybe: String];
         }
 
         let conf = sub::Configuration::default();
-
         assert_eq!(conf.definitely_maybe, "won't get here");
     }
 
@@ -232,7 +245,6 @@ mod tests {
     fn invalid_data_returns_apropos_result() {
         #![allow(dead_code)]
         #![allow(clippy::items_after_statements)]
-
         env::set_var("TEST_TRUE_ENV_KEY", "potato");
         make_conf! ["TEST_TRUE_ENV_KEY" => test_boolean: bool];
 
