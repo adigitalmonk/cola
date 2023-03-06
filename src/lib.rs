@@ -11,14 +11,18 @@
 #[macro_export]
 /// A macro that generates the Configuration struct.
 ///
-/// The macro accepts a combination of environment variable to load, identifier to attach it to, and a type to parse it to.
-/// Environment variables are always loaded as a String; this will `parse()` the string into the provided type.
+/// The macro accepts a combination of environment variables to load, identifier to attach it to, and a type to parse it into.
+/// Environment variables are always loaded as a String; this will call <core::str::parse> on the string into the provided type.
+/// As a result, whatever your target data type is must implement <core::str::FromStr>.
 ///
-/// If these values aren't visible at runtime, the process will panic and terminated immediately.
+/// The struct will expose two methods:
+/// - a `new` method that will return a Result with the loaded data; the error is sbased on what is wrong when loading
+/// - a `default` implementation that will return the structure directly; it will call `std::panic` if anything is wrong
+///
 /// We save ourselves from having to write boiler plate to load config and instead can instead just
 /// get to work with assurances that the values are there.
 ///
-/// The generated struct also contains some light usage documentation in for your rust docs.
+/// The generated struct also contains some light usage documentation for your rust docs.
 ///
 /// # Visibility
 ///
@@ -60,6 +64,7 @@
 /// assert_eq!(my_conf.age(), "Voting age");
 ///
 /// // If you want control over the bad data situation
+/// use cola::ConfigError;
 /// let also_my_conf = match Configuration::new() {
 ///     Ok(conf) => conf,
 ///     Err(ConfigError::ConfigMissing(reason)) => panic!("'{reason}' not found"),
@@ -71,15 +76,7 @@
 ///
 macro_rules! make_conf {
     ( $( $x:expr => $n:ident: $t:ty ), * ) => {
-        use std::str::FromStr;
-        pub type ConfigResult = Result<Configuration, ConfigError>;
-
-        #[derive(Debug)]
-        /// Errors that could be raised by the configuration loading process
-        pub enum ConfigError {
-            ConfigMissing(String),
-            InvalidData(String)
-        }
+        use $crate::ConfigError;
 
         /// App configuration, wrapped up into a neat package.
         pub struct Configuration {
@@ -108,35 +105,54 @@ macro_rules! make_conf {
                 /// )
             )*
             ///
-            pub fn new() -> ConfigResult {
+            pub fn new() -> Result<Configuration, ConfigError> {
                 Ok(Self {
                     $(
-                        $n: Self::convert::<$t>(Self::parse_env($x)?)?,
+                        $n: $crate::convert::<$t>($crate::parse_env($x)?)?,
                     )*
                 })
-            }
-
-            fn convert<T>(source: String) -> Result<T, ConfigError>
-            where T: FromStr
-            {
-                match source.parse::<T>() {
-                    Ok(value) => Ok(value),
-                    Err(_) => Err(ConfigError::InvalidData(source))
-                }
-            }
-
-            fn parse_env(key: &str) -> Result<String, ConfigError> {
-                match std::env::var(key) {
-                    Err(_) => Err(ConfigError::ConfigMissing(String::from(key))),
-                    Ok(val) => Ok(val)
-                }
             }
         }
     }
 }
 
+#[derive(Debug)]
+/// Errors that could be raised while loading the configuration
+pub enum ConfigError {
+    ConfigMissing(String),
+    InvalidData(String),
+}
+
+/// Convert a String into a given type.
+///
+/// # Errors
+/// - <ConfigError::InvalidData>
+pub fn convert<T>(source: String) -> Result<T, ConfigError>
+where
+    T: core::str::FromStr,
+{
+    source
+        .parse::<T>()
+        .map_or_else(|_| Err(ConfigError::InvalidData(source)), Ok)
+}
+
+/// Load the data stored in a given environment variable.
+///
+/// # Errors
+/// - <ConfigError::ConfigMissing>
+pub fn parse_env(key: &str) -> Result<String, ConfigError> {
+    std::env::var(key).map_or_else(
+        |_| {
+            let error_msg = String::from(key);
+            Err(ConfigError::ConfigMissing(error_msg))
+        },
+        Ok,
+    )
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::env;
 
     make_conf! [
