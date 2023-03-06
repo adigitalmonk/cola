@@ -53,12 +53,26 @@
 /// let my_conf = Configuration::default();
 /// assert_eq!(my_conf.hello(), "Hello, Brad");
 /// assert_eq!(my_conf.age(), "Voting age");
+/// 
+/// 
+/// // This will return an error for if the data was missing.
+/// let also_my_conf = Configuration::new().unwrap();
 /// assert_eq!(my_conf.your_name, "Brad");
 /// assert_eq!(my_conf.your_age, 20u32);
 /// ```
 ///
 macro_rules! make_conf {
     ( $( $x:expr => $n:ident: $t:ty ), * ) => {
+        use std::str::FromStr;
+        type ConfigResult = Result<Configuration, ConfigError>;
+
+        #[derive(Debug)]
+        /// Errors that could be raised by the configuration loading process
+        enum ConfigError {
+            ConfigMissing(String),
+            InvalidData(String)
+        }
+
         /// App configuration, wrapped up into a neat package.
         struct Configuration {
             $(
@@ -69,25 +83,44 @@ macro_rules! make_conf {
         }
 
         impl Default for Configuration {
-            /// Load the default configuration.
-            ///
-            /// # Panics
-            ///
-            /// This will panic if there is invalid or missing data for the required environment variables:
-            ///
+            fn default() -> Configuration {
+                match Configuration::new() {
+                    Ok(config) => config,
+                    Err(ConfigError::ConfigMissing(reason)) => panic!("The value {} is missing", reason),
+                    Err(ConfigError::InvalidData(reason)) => panic!("The data stored in {} is invalid", reason)
+                }
+            }
+        }
+
+        impl Configuration {
+            /// Loads application configuration.
             $(
                 /// (
                 #[doc = $x]
                 /// )
             )*
             ///
-            fn default() -> Self {
-                // Is this possible? A config_item! macro; something that would allow us to
-                // pass a function to parse instead of using `parse::<$t>`
-                Self {
+            fn new() -> ConfigResult {
+                Ok(Self {
                     $(
-                        $n: std::env::var($x).expect("Could not load config value").parse::<$t>().expect("bad data type"),
+                        $n: Self::convert::<$t>(Self::parse_env($x)?)?,
                     )*
+                })
+            }
+
+            fn convert<T>(source: String) -> Result<T, ConfigError>
+            where T: FromStr
+            {
+                match source.parse::<T>() {
+                    Ok(value) => Ok(value),
+                    Err(_) => Err(ConfigError::InvalidData(source))
+                }
+            }
+
+            fn parse_env(key: &str) -> Result<String, ConfigError> {
+                match std::env::var(key) {
+                    Err(_) => Err(ConfigError::ConfigMissing(String::from(key))),
+                    Ok(val) => Ok(val)
                 }
             }
         }
@@ -103,8 +136,8 @@ mod tests {
         "TEST_INT_ENV_KEY" => test_number: u32,
         "TEST_INT_ENV_KEY" => test_float_num: f32,
         "TEST_NEG_ENV_KEY" => test_neg_num: i32,
-        "TEST_TRUE_ENV_KEY" =>  test_boolean: bool,
-        "TEST_FALSE_ENV_KEY" =>  test_false_boolean: bool
+        "TEST_TRUE_ENV_KEY" => test_boolean: bool,
+        "TEST_FALSE_ENV_KEY" => test_false_boolean: bool
     ];
 
     #[test]
@@ -127,9 +160,6 @@ mod tests {
 
     #[test]
     fn shadows_other_configurations() {
-        // We allow this here because we are putting the `env::set_var`
-        // expression before we run the macro to create the struct;
-        // this ordering triggers the lint.
         #![allow(clippy::items_after_statements)]
 
         env::set_var("TEST_STRING_ENV_KEY", "TEST_STRING_VALUE");
@@ -154,4 +184,43 @@ mod tests {
 
         assert_eq!(conf.definitely_maybe, "won't get here");
     }
+
+    #[test]
+    fn it_allows_calling_new_directly() {
+        #![allow(clippy::items_after_statements)]
+        env::set_var("TEST_TRUE_ENV_KEY", "true");
+        make_conf! ["TEST_TRUE_ENV_KEY" => test_boolean: bool];
+
+        let conf = Configuration::new().unwrap();
+        assert!(conf.test_boolean);
+    }
+
+    #[test]
+    fn missing_data_returns_apropos_result() {
+        #![allow(dead_code)]
+        make_conf![
+            "DEFINITELY_DOES_NOT_EXIST" => definitely_maybe: String
+        ];
+
+        match Configuration::new() {
+            Err(ConfigError::ConfigMissing(string)) => assert!(dbg!(string).contains("DEFINITELY_DOES_NOT_EXIST")),
+            _ => panic!("should not panic")
+        }
+    }
+
+    #[test]
+    fn invalid_data_returns_apropos_result() {
+        #![allow(dead_code)]
+        #![allow(clippy::items_after_statements)]
+
+        env::set_var("TEST_TRUE_ENV_KEY", "potato");
+        make_conf! ["TEST_TRUE_ENV_KEY" => test_boolean: bool];
+
+        match Configuration::new() {
+            Err(ConfigError::InvalidData(string)) => assert!(dbg!(string).contains("potato")),
+            Err(err) => panic!("should not panic {err:?}"),
+            Ok(_) => panic!("should not be ok")
+        }
+    }
+
 }
