@@ -18,67 +18,75 @@
 /// We save ourselves from having to write boiler plate to load config and instead can instead just
 /// get to work with assurances that the values are there.
 ///
-/// The generated struct also contains some light usage documentation in the rust docs.
+/// The generated struct also contains some light usage documentation in for your rust docs.
+///
+/// # Visibility
+///
+/// The generated configuration will be entirely public to allow for simple extension;
+/// it's recommended you wrap the configuration into it's own module to limit the visibility.
 ///
 /// # Examples
 ///
 /// ```
 /// // We seed the environment variable for our example
-/// std::env::set_var("YOUR_NAME", "Brad");
-/// std::env::set_var("YOUR_AGE", "20");
-/// // Normally this is done in the system, instead of the application
+/// std::env::set_var("EX_YOUR_NAME", "Brad");
+/// std::env::set_var("EX_YOUR_AGE", "20");
+/// // This should be done at the system level instead of the application
 ///
-/// cola::make_conf! [
-///     "YOUR_NAME" => your_name: String,
-///     "YOUR_AGE" => your_age: u32
-/// ];
+/// mod my_conf {
+///     cola::make_conf! [
+///         "EX_YOUR_NAME" => your_name: String,
+///         "EX_YOUR_AGE" => your_age: u32
+///     ];
 
-/// impl Configuration {
-///     fn hello(&self) -> String {
-///         format!("Hello, {}", self.your_name)
-///     }
-
-///     fn age(&self) -> String {
-///       match self.your_age {
-///         age if age >= 18 => {
-///           "Voting age".to_string()
-///         },
-///         age => {
-///           "Too young to vote".to_string()
+///     impl Configuration {
+///         pub fn hello(&self) -> String {
+///             format!("Hello, {}", self.your_name)
 ///         }
-///       }
+
+///         pub fn age(&self) -> String {
+///             match self.your_age {
+///                 age if age >= 18 => "Voting age".to_string(),
+///                 age => "Too young to vote".to_string()
+///             }
+///         }
 ///     }
 /// }
-
+///
+/// use my_conf::*;
+///
 /// let my_conf = Configuration::default();
 /// assert_eq!(my_conf.hello(), "Hello, Brad");
 /// assert_eq!(my_conf.age(), "Voting age");
-/// 
-/// 
-/// // This will return an error for if the data was missing.
-/// let also_my_conf = Configuration::new().unwrap();
-/// assert_eq!(my_conf.your_name, "Brad");
-/// assert_eq!(my_conf.your_age, 20u32);
+///
+/// // If you want control over the bad data situation
+/// let also_my_conf = match Configuration::new() {
+///     Ok(conf) => conf,
+///     Err(ConfigError::ConfigMissing(reason)) => panic!("'{reason}' not found"),
+///     Err(ConfigError::InvalidData(reason)) => panic!("'{reason}' not parseable")
+/// };
+/// assert_eq!(also_my_conf.your_name, "Brad");
+/// assert_eq!(also_my_conf.your_age, 20u32);
 /// ```
 ///
 macro_rules! make_conf {
     ( $( $x:expr => $n:ident: $t:ty ), * ) => {
         use std::str::FromStr;
-        type ConfigResult = Result<Configuration, ConfigError>;
+        pub type ConfigResult = Result<Configuration, ConfigError>;
 
         #[derive(Debug)]
         /// Errors that could be raised by the configuration loading process
-        enum ConfigError {
+        pub enum ConfigError {
             ConfigMissing(String),
             InvalidData(String)
         }
 
         /// App configuration, wrapped up into a neat package.
-        struct Configuration {
+        pub struct Configuration {
             $(
                 #[doc="This value represents the data stored in the environment variable "]
                 #[doc=$x]
-                $n: $t,
+                pub $n: $t,
             )*
         }
 
@@ -86,8 +94,8 @@ macro_rules! make_conf {
             fn default() -> Configuration {
                 match Configuration::new() {
                     Ok(config) => config,
-                    Err(ConfigError::ConfigMissing(reason)) => panic!("The value {} is missing", reason),
-                    Err(ConfigError::InvalidData(reason)) => panic!("The data stored in {} is invalid", reason)
+                    Err(ConfigError::ConfigMissing(reason)) => panic!("The value {reason} is missing"),
+                    Err(ConfigError::InvalidData(reason)) => panic!("The data stored in {reason} is non-parseable")
                 }
             }
         }
@@ -100,7 +108,7 @@ macro_rules! make_conf {
                 /// )
             )*
             ///
-            fn new() -> ConfigResult {
+            pub fn new() -> ConfigResult {
                 Ok(Self {
                     $(
                         $n: Self::convert::<$t>(Self::parse_env($x)?)?,
@@ -164,9 +172,7 @@ mod tests {
 
         env::set_var("TEST_STRING_ENV_KEY", "TEST_STRING_VALUE");
 
-        make_conf! [
-            "TEST_STRING_ENV_KEY" => definitely_new_value: String
-        ];
+        make_conf! ["TEST_STRING_ENV_KEY" => definitely_new_value: String];
 
         let conf = Configuration::default();
 
@@ -176,11 +182,11 @@ mod tests {
     #[test]
     #[should_panic]
     fn it_fails_on_missing_value() {
-        make_conf! [
-            "DEFINITELY_DOES_NOT_EXIST" => definitely_maybe: String
-        ];
+        mod sub {
+            make_conf! ["DEFINITELY_DOES_NOT_EXIST" => definitely_maybe: String];
+        }
 
-        let conf = Configuration::default();
+        let conf = sub::Configuration::default();
 
         assert_eq!(conf.definitely_maybe, "won't get here");
     }
@@ -198,13 +204,11 @@ mod tests {
     #[test]
     fn missing_data_returns_apropos_result() {
         #![allow(dead_code)]
-        make_conf![
-            "DEFINITELY_DOES_NOT_EXIST" => definitely_maybe: String
-        ];
+        make_conf! ["NOT_FOUND" => definitely_maybe: String];
 
         match Configuration::new() {
-            Err(ConfigError::ConfigMissing(string)) => assert!(dbg!(string).contains("DEFINITELY_DOES_NOT_EXIST")),
-            _ => panic!("should not panic")
+            Err(ConfigError::ConfigMissing(str)) => assert!(str.contains("NOT_FOUND")),
+            _ => panic!("should not panic"),
         }
     }
 
@@ -217,10 +221,9 @@ mod tests {
         make_conf! ["TEST_TRUE_ENV_KEY" => test_boolean: bool];
 
         match Configuration::new() {
-            Err(ConfigError::InvalidData(string)) => assert!(dbg!(string).contains("potato")),
+            Err(ConfigError::InvalidData(string)) => assert!(string.contains("potato")),
             Err(err) => panic!("should not panic {err:?}"),
-            Ok(_) => panic!("should not be ok")
+            Ok(_) => panic!("should not be ok"),
         }
     }
-
 }
